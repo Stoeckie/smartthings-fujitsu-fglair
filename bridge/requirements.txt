@@ -1,4 +1,0 @@
-aiohttp>=3.9
-electrolux-group-developer-sdk>=0.7
-ayla-iot-unofficial>=1.4
-roombapy-prime>=0.8.2
