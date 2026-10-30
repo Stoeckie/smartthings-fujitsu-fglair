@@ -5,6 +5,8 @@ Sources
     (developer.electrolux.one): state at start, live updates over SSE, poll as fallback.
   * Fujitsu air conditioners with an FGLair wifi adapter, via the Ayla cloud that the FGLair app uses
     (library ayla-iot-unofficial, the same one Home Assistant uses). Polled every 60 s.
+  * Škoda cars via the official MyŠkoda public API (API key from the MyŠkoda app): battery, range, charging,
+    plug, doors, climate; start/stop charging and climate. Polled every 6 minutes (the API allows 20 calls/hour).
   * iRobot account (optional): favorite names and rooms for the "iRobot Roomba (local)" Edge driver
     (library roombapy-prime). Only read, twice a day; the robot itself is controlled locally by the hub.
 
@@ -17,6 +19,7 @@ LAN API (default port 8787, no auth, LAN only)
       dryer:   run | pause | resume | stop | refresh
       aircon:  on | off | mode (auto cool dry fan heat) | setpoint (C) | fan (quiet low medium high auto)
                | swing (off vertical horizontal both) | refresh
+      car:     on | off (charging) | climate_on | climate_off | limit (percent) | refresh
   GET  /stbridge/irobot/<blid>[?refresh=1] -> {"name", "favorites": [{name, id, command, params}], "updated"}
 
 Usage
@@ -44,7 +47,7 @@ from typing import Any
 
 from aiohttp import web
 
-VERSION = "2026-10-30d"
+VERSION = "2026-10-30e"
 HERE = Path(__file__).resolve().parent
 # Data folder: next to the script on Windows, /data in the Docker image (STBRIDGE_DATA)
 DATA = Path(os.environ.get("STBRIDGE_DATA") or HERE)
@@ -412,6 +415,150 @@ class FGLair:
                 await asyncio.sleep(int(self.f.get("poll_seconds", 60)))
 
 
+# ---------------------------------------------------------------- Škoda (official MyŠkoda public API)
+
+SKODA_API = "https://public.api.connect.skoda-auto.cz/api/v1"
+SKODA_PARTS = "info,status,fuelStatus,odometer,airConditioning,charging"
+
+
+def skoda_configured(k: dict[str, Any]) -> bool:
+    return bool(k.get("api_key") and k.get("vin") and not str(k.get("api_key")).startswith("PLAK_HIER"))
+
+
+def _g(d: Any, *path: str) -> Any:
+    for p in path:
+        if not isinstance(d, dict):
+            return None
+        d = d.get(p)
+    return d
+
+
+def car_state(v: dict[str, Any]) -> dict[str, Any]:
+    """Flatten a MyŠkoda vehicle into what the Edge driver needs. Missing parts stay None."""
+    st = _g(v, "charging", "status") or {}
+    bat = st.get("battery") or {}
+    fuel = v.get("fuelStatus") or {}
+    elec = None
+    for eng in (fuel.get("primaryEngineRange"), fuel.get("secondaryEngineRange")):
+        if isinstance(eng, dict) and str(eng.get("engineType", "")).lower() == "electric":
+            elec = eng
+    soc = bat.get("stateOfChargeInPercent")
+    if soc is None and elec:
+        soc = elec.get("currentSoCInPercent")
+    rng = bat.get("remainingCruisingRangeInMeters")
+    rng = round(rng / 1000) if isinstance(rng, (int, float)) else (elec or {}).get("remainingRangeInKm")
+    overall = _g(v, "status", "overall") or {}
+    ac = v.get("airConditioning") or {}
+    return {
+        "battery": soc,
+        "electricRange": rng,
+        "totalRange": fuel.get("totalRangeInKm"),
+        "fuelLevel": next((e.get("currentFuelLevelInPercent") for e in (fuel.get("primaryEngineRange"),
+                          fuel.get("secondaryEngineRange")) if isinstance(e, dict)
+                          and e.get("currentFuelLevelInPercent") is not None), None),
+        "charging": str(st.get("state") or "").upper() or None,          # e.g. CHARGING, READY_FOR_CHARGING
+        "chargePowerKw": st.get("chargePowerInKw"),
+        "minutesToFull": st.get("remainingTimeToFullyChargedInMinutes"),
+        "plug": str(st.get("plugConnectionState") or "").upper() or None,  # CONNECTED / DISCONNECTED
+        "targetSoc": _g(v, "charging", "settings", "targetStateOfChargeInPercent"),
+        "atHome": _g(v, "charging", "isVehicleInSavedLocation"),
+        "odometer": _g(v, "odometer", "mileageInKm"),
+        "locked": str(overall.get("locked") or overall.get("doorsLocked") or "").upper() or None,
+        "doors": str(overall.get("doors") or "").upper() or None,
+        "windows": str(overall.get("windows") or "").upper() or None,
+        "climate": str(ac.get("state") or "").upper() or None,             # ON / OFF / HEATING / COOLING ...
+        "climateTarget": _g(ac, "targetTemperature", "value"),
+        "updated": _g(v, "charging", "carCapturedTimestamp") or _g(v, "status", "carCapturedTimestamp"),
+    }
+
+
+class Skoda:
+    POLL = 360  # 10 calls per hour, leaves room for commands within the 20/hour limit
+
+    def __init__(self, cfg: dict[str, Any]) -> None:
+        self.k = cfg.get("skoda") or {}
+        self.vin = str(self.k.get("vin") or "").strip().upper()
+        self.session = None
+        self.wake = asyncio.Event()
+        self.pause_until = 0.0
+        self.last: dict[str, Any] = {}
+
+    async def _call(self, method: str, path: str, body: Any = None) -> Any:
+        if time.time() < self.pause_until:
+            raise RuntimeError("rate limited, waiting")
+        headers = {"X-API-Key": self.k["api_key"], "Accept": "application/json"}
+        async with self.session.request(method, SKODA_API + path, headers=headers, json=body) as r:
+            exp = r.headers.get("X-API-Key-Expires-At")
+            if exp:
+                self.last["keyExpires"] = exp
+            if r.status == 429:
+                wait = int(r.headers.get("Retry-After") or 600)
+                self.pause_until = time.time() + wait
+                raise RuntimeError(f"rate limited for {wait} s")
+            if r.status in (401, 403):
+                raise PermissionError("API key expired or not valid for this car (make a new one in the MyŠkoda app)")
+            text = await r.text()
+            if r.status >= 400:
+                raise RuntimeError(f"HTTP {r.status}: {text[:200]}")
+            return json.loads(text) if text else {}
+
+    async def _refresh(self) -> None:
+        data = await self._call("GET", f"/vehicles/{self.vin}?include={SKODA_PARTS}")
+        v = data.get("vehicle") or {}
+        state = car_state(v)
+        state["keyExpires"] = self.last.get("keyExpires")
+        state["errors"] = [e.get("type") for e in data.get("errors") or [] if isinstance(e, dict)]
+        name = v.get("name") or v.get("licensePlate") or "Škoda"
+        REG.upsert("skoda-" + self.vin, "car", name, state, True, self._command())
+        log.info("[skoda] %s: battery %s%%, %s km, charging %s, plug %s", name, state["battery"],
+                 state["electricRange"], state["charging"], state["plug"])
+
+    def _command(self):
+        async def handler(cmd: str, value: Any) -> None:
+            paths = {"on": "/charging/start", "off": "/charging/stop",
+                     "climate_off": "/air-conditioning/stop"}
+            if cmd == "refresh":
+                self.wake.set()
+                return
+            if cmd == "climate_on":
+                temp = float(self.k.get("climate_temp") or 21)
+                await self._call("POST", f"/vehicles/{self.vin}/air-conditioning/start",
+                                 {"targetTemperature": {"value": temp, "unit": "CELSIUS"}})
+            elif cmd == "limit":
+                await self._call("PUT", f"/vehicles/{self.vin}/charging/limit",
+                                 {"targetStateOfChargeInPercent": int(value)})
+            elif cmd in paths:
+                await self._call("POST", f"/vehicles/{self.vin}{paths[cmd]}")
+            else:
+                raise ValueError(f"unsupported command {cmd}")
+            log.info("[skoda] command %s %s", cmd, "" if value is None else value)
+            # the car needs a while to report back; refresh once after 90 s
+            asyncio.get_running_loop().call_later(90, self.wake.set)
+        return handler
+
+    async def run(self) -> None:
+        if not skoda_configured(self.k):
+            log.info("[skoda] not configured")
+            return
+        import aiohttp
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            self.session = session
+            while True:
+                try:
+                    await self._refresh()
+                except PermissionError as ex:
+                    log.error("[skoda] %s", ex)
+                    REG.set_online("skoda-", False)
+                    return
+                except Exception as ex:  # noqa: BLE001
+                    log.warning("[skoda] update failed: %s", ex)
+                self.wake.clear()
+                try:
+                    await asyncio.wait_for(self.wake.wait(), timeout=self.POLL)
+                except asyncio.TimeoutError:
+                    pass
+
+
 # ---------------------------------------------------------------- iRobot account (favorites for the Roomba driver)
 
 IROBOT: dict[str, Any] = {"robots": {}, "updated": 0, "error": None, "refresh": None}
@@ -526,6 +673,14 @@ een access token en refresh token.</p>
 <label>Regio</label><select name="region"><option value="eu">Europa</option><option value="default">Overig</option>
 <option value="cn">China</option></select>
 <button type="submit">FGLair opslaan en verbinden</button></form>
+<h3>Škoda</h3>
+<p>Maak in de MyŠkoda app een API key aan (open <b>go.skoda.eu/api-keys</b> op je telefoon) en kies je auto.
+Het VIN (17 tekens) staat in de app bij de auto en op het kentekenbewijs.</p>
+<form method="post"><input type="hidden" name="section" value="skoda">
+<label>API key</label><input name="api_key" autocomplete="off" required>
+<label>VIN</label><input name="vin" maxlength="17" minlength="17" required>
+<label>Temperatuur voor airco aan (°C)</label><input name="climate_temp" value="21" required>
+<button type="submit">Škoda opslaan en verbinden</button></form>
 <h3>iRobot (optioneel)</h3>
 <p>E-mail en wachtwoord van de iRobot app. De bridge leest alleen de namen en kamers van je favorieten,
 twee keer per dag, voor de Roomba driver op de hub. De robot zelf wordt lokaal bediend.</p>
@@ -599,6 +754,15 @@ def make_app(bridge_id: str, on_setup=None) -> web.Application:
                 f"{d['name']} ({d['state'].get('mode')}, {d['state'].get('setpoint')} C)" for d in acs))
         else:
             lines.append("FGLair ingesteld, nog geen airco gevonden (zie bridge.log).")
+        k = cfg.get("skoda") or {}
+        cars = [d for d in REG.devices.values() if d["type"] == "car"]
+        if skoda_configured(k):
+            if cars:
+                lines.append("Škoda verbonden: " + ", ".join(
+                    f"{d['name']} ({d['state'].get('battery')}%, sleutel geldig tot {d['state'].get('keyExpires') or '?'})"
+                    for d in cars))
+            else:
+                lines.append("Škoda ingesteld, nog geen gegevens (zie bridge.log).")
         r = cfg.get("irobot") or {}
         if irobot_configured(r):
             if IROBOT.get("error"):
@@ -621,7 +785,17 @@ def make_app(bridge_id: str, on_setup=None) -> web.Application:
         form = await req.post()
         cfg = load_config()
         section = str(form.get("section", "aeg"))
-        if section == "irobot":
+        if section == "skoda":
+            k = cfg.setdefault("skoda", {})
+            k["api_key"] = "".join(str(form.get("api_key", "")).split())
+            k["vin"] = "".join(str(form.get("vin", "")).split()).upper()
+            try:
+                k["climate_temp"] = max(16.0, min(29.0, float(str(form.get("climate_temp", "21")).replace(",", "."))))
+            except ValueError:
+                k["climate_temp"] = 21.0
+            save_config(cfg)
+            log.info("[setup] Škoda key saved")
+        elif section == "irobot":
             r = cfg.setdefault("irobot", {})
             r["username"] = str(form.get("username", "")).strip()
             r["password"] = str(form.get("password", ""))
@@ -728,6 +902,22 @@ async def demo_devices() -> None:
     await win("refresh", None)
     REG.handlers["demo-window"] = win
     await aircon("refresh", None)
+    car = {"battery": 64, "electricRange": 38, "totalRange": 610, "charging": "READY_FOR_CHARGING",
+           "chargePowerKw": 0, "plug": "CONNECTED", "atHome": True, "doors": "CLOSED", "windows": "CLOSED",
+           "locked": "YES", "climate": "OFF", "odometer": 41234, "targetSoc": 100}
+
+    async def demo_car(cmd, value):
+        if cmd == "on":
+            car.update(charging="CHARGING", chargePowerKw=3.6)
+        elif cmd == "off":
+            car.update(charging="READY_FOR_CHARGING", chargePowerKw=0)
+        elif cmd == "climate_on":
+            car["climate"] = "ON"
+        elif cmd == "climate_off":
+            car["climate"] = "OFF"
+        REG.upsert("demo-car", "car", "Demo auto", car, True, demo_car)
+
+    await demo_car("refresh", None)
     t0 = time.time()
     while True:
         el = int(time.time() - t0) % 180
@@ -764,7 +954,7 @@ async def serve(args) -> None:
         bridge_id = cfg["bridge_id"] = uuid.uuid4().hex[:12]
         save_config(cfg)
     port = int(cfg.get("port", 8787))
-    sources = {"aeg": Electrolux, "fglair": FGLair, "irobot": IRobotCloud}
+    sources = {"aeg": Electrolux, "fglair": FGLair, "skoda": Skoda, "irobot": IRobotCloud}
     tasks: dict[str, asyncio.Task] = {}
 
     def start(section: str) -> None:

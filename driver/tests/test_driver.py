@@ -30,7 +30,8 @@ local function capmock(path)
     __call = function(_, a, b) return { path = path, arg = a } end })
 end
 local caps = capmock("cap")
-for _, id in ipairs({ "windowShade", "windowShadeLevel", "refresh", "dryerOperatingState", "switch",
+for _, id in ipairs({ "windowShade", "windowShadeLevel", "refresh", "dryerOperatingState", "switch", "battery",
+                      "powerMeter", "presenceSensor", "contactSensor",
                       "airConditionerMode", "airConditionerFanMode", "fanOscillationMode",
                       "thermostatCoolingSetpoint" }) do caps[id].ID = id end
 package.loaded["st.capabilities"] = caps
@@ -55,7 +56,8 @@ function NEW_DEVICE(info)
               device_network_id = info.device_network_id, parent_device_id = info.parent_device_id,
               parent_assigned_child_key = info.parent_assigned_child_key, label = info.label,
               events = {}, state = "online",
-              profile = { components = { main = { id = "main" }, outdoor = { id = "outdoor" } } } }
+              profile = { components = { main = { id = "main" }, outdoor = { id = "outdoor" }, plug = { id = "plug" },
+                                         climate = { id = "climate" }, doors = { id = "doors" } } } }
   function d:get_field(k) return self.fields[k] end
   function d:set_field(k, v) self.fields[k] = v end
   function d:emit_event(e) self.events[#self.events + 1] = { comp = "main", path = e.path, arg = e.arg } end
@@ -184,3 +186,38 @@ def test_aircon_flow(bridge):
     assert ev["main:cap.airConditionerMode.airConditionerMode"] == "fanOnly"
     assert ev["main:cap.fanOscillationMode.fanOscillationMode"] == "vertical"
     assert "main:cap.airConditionerMode.supportedAcModes" not in ev  # unchanged list is not re-emitted
+
+
+def test_car_flow(bridge):
+    lua = lua53.LuaRuntime(unpack_returned_tuples=True)
+    lua.execute(f'package.path = "{SRC}/?.lua;{HERE}/?.lua;" .. package.path')
+    lua.globals().py_http = py_http
+    lua.execute(HARNESS)
+    lua.execute(f'dofile("{SRC}/init.lua")')
+    lua.execute(f'''
+      PARENT = NEW_DEVICE({{ id = "p1", label = "Bridge", device_network_id = "stbridge-test1",
+                            preferences = {{ ipAddress = "127.0.0.1", port = "{bridge}" }} }})
+      DRIVER.lifecycle_handlers.init(DRIVER_OBJ, PARENT)
+      DRIVER.capability_handlers.refresh.refresh(DRIVER_OBJ, PARENT)
+      DRIVER.capability_handlers.refresh.refresh(DRIVER_OBJ, PARENT)
+      for _, d in ipairs(DEVICES) do if d.parent_assigned_child_key == "demo-car" then CAR = d end end
+    ''')
+    car = lua.eval("CAR")
+    assert car is not None
+    ev = {}
+    for i in range(1, len(car.events) + 1):
+        e = car.events[i]
+        ev[f"{e.comp}:{e.path}"] = e.arg
+    assert ev["main:cap.battery.battery"] == 64
+    assert "main:cap.switch.switch.off" in ev and "main:cap.presenceSensor.presence.present" in ev
+    assert "plug:cap.contactSensor.contact.closed" in ev and "climate:cap.switch.switch.off" in ev
+    assert "doors:cap.contactSensor.contact.closed" in ev
+
+    def state():
+        with urllib.request.urlopen(f"http://127.0.0.1:{bridge}/stbridge/devices") as r:
+            devs = json.loads(r.read())["devices"]
+        return next(d for d in devs if d["id"] == "demo-car")["state"]
+    lua.execute('DRIVER.capability_handlers.switch.on(DRIVER_OBJ, CAR, { component = "main" })')
+    assert state()["charging"] == "CHARGING"
+    lua.execute('DRIVER.capability_handlers.switch.on(DRIVER_OBJ, CAR, { component = "climate" })')
+    assert state()["climate"] == "ON"

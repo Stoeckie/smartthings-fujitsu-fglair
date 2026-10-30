@@ -5,13 +5,14 @@
 --   window (VELUX ACTIVE via HomeKit) -> windowShade, windowShadeLevel
 --   sensor (VELUX climate sensor)     -> temperature, humidity, CO2
 --   aircon (Fujitsu via FGLair)       -> switch, airConditionerMode, setpoint, fan, swing, indoor/outdoor temp
+--   car    (Škoda public API)         -> battery, charging switch + power, at home, plug, climate, doors
 local Driver = require "st.driver"
 local capabilities = require "st.capabilities"
 local log = require "log"
 local cosock = require "cosock"
 local api = require "bridge_api"
 
-local BUILD = "2026-10-30a"
+local BUILD = "2026-10-30b"
 local FAST_POLL_SECS = 2
 local FAST_POLL_FOR = 40
 local SCAN_CONCURRENCY = 16
@@ -28,8 +29,8 @@ local oscillation = capabilities.fanOscillationMode
 local coolSetpoint = capabilities.thermostatCoolingSetpoint
 
 local PROFILE = { dryer = "stoeckie-dryer", window = "stoeckie-window", sensor = "stoeckie-climate",
-                  aircon = "stoeckie-aircon" }
-local MANUFACTURER = { dryer = "AEG", aircon = "Fujitsu" }
+                  aircon = "stoeckie-aircon", car = "stoeckie-car" }
+local MANUFACTURER = { dryer = "AEG", aircon = "Fujitsu", car = "Skoda" }
 
 -- bridge value <-> SmartThings value
 local AC_MODE_TO_ST = { auto = "auto", cool = "cool", dry = "dry", fan = "fanOnly", heat = "heat" }
@@ -177,7 +178,42 @@ local function emit_aircon(dev, s)
   emit_list(dev, "acSwings", map_list(s.supportedSwings, SWING_TO_ST), oscillation.supportedFanOscillationModes)
 end
 
-local EMIT = { dryer = emit_dryer, window = emit_window, sensor = emit_sensor, aircon = emit_aircon }
+local function comp_emit(dev, id, make)
+  local c = dev.profile and dev.profile.components and dev.profile.components[id]
+  if not c then return end
+  local ok, err = pcall(function() dev:emit_component_event(c, make()) end)
+  if not ok then log.warn("[stbridge] " .. dev.label .. " " .. id .. ": " .. tostring(err)) end
+end
+
+local function emit_car(dev, s)
+  if tonumber(s.battery) then
+    try_emit(dev, function() return capabilities.battery.battery(math.max(0, math.min(100, math.floor(tonumber(s.battery) + 0.5)))) end)
+  end
+  local charging = tostring(s.charging or ""):upper()
+  if charging ~= "" then
+    try_emit(dev, function() return charging == "CHARGING" and capabilities.switch.switch.on() or capabilities.switch.switch.off() end)
+  end
+  if s.chargePowerKw ~= nil then
+    try_emit(dev, function() return capabilities.powerMeter.power({ value = (tonumber(s.chargePowerKw) or 0) * 1000, unit = "W" }) end)
+  end
+  if s.atHome ~= nil then
+    try_emit(dev, function() return s.atHome and capabilities.presenceSensor.presence.present() or capabilities.presenceSensor.presence.not_present() end)
+  end
+  local plug = tostring(s.plug or ""):upper()
+  if plug ~= "" then
+    comp_emit(dev, "plug", function() return plug == "CONNECTED" and contact.contact.closed() or contact.contact.open() end)
+  end
+  local climate = tostring(s.climate or ""):upper()
+  if climate ~= "" then
+    comp_emit(dev, "climate", function() return (climate == "OFF" or climate == "INVALID") and capabilities.switch.switch.off() or capabilities.switch.switch.on() end)
+  end
+  local doors = tostring(s.doors or ""):upper()
+  if doors ~= "" then
+    comp_emit(dev, "doors", function() return doors == "CLOSED" and contact.contact.closed() or contact.contact.open() end)
+  end
+end
+
+local EMIT = { dryer = emit_dryer, window = emit_window, sensor = emit_sensor, aircon = emit_aircon, car = emit_car }
 
 -- polling -------------------------------------------------------------------------
 
@@ -298,8 +334,12 @@ local function handle_machine_state(driver, device, cmd)
   end
 end
 
-local function handle_switch_on(driver, device) send(driver, device, "on") end
-local function handle_switch_off(driver, device) send(driver, device, "off") end
+local function handle_switch_on(driver, device, cmd)
+  send(driver, device, (cmd and cmd.component == "climate") and "climate_on" or "on")
+end
+local function handle_switch_off(driver, device, cmd)
+  send(driver, device, (cmd and cmd.component == "climate") and "climate_off" or "off")
+end
 local function handle_ac_mode(driver, device, cmd)
   local m = AC_MODE_FROM_ST[cmd.args.mode or ""]
   if m then send(driver, device, "mode", m) else log.warn("[stbridge] unsupported AC mode " .. tostring(cmd.args.mode)) end
