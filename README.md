@@ -58,6 +58,10 @@ docker compose up -d --build
 
 Bridge LAN API (no auth, LAN only): `GET /stbridge/info`, `GET /stbridge/devices`, `POST /stbridge/devices/<id>/command` with `{"cmd": "on|off|mode|setpoint|fan|swing|refresh", "value": ...}`.
 
+## iRobot favorites (optional)
+
+With the [iRobot Roomba (local)](https://github.com/Stoeckie/smartthings-irobot-roomba-local) Edge driver, the bridge can read the names and rooms of your iRobot app favorites, so they show up in SmartThings without setup. Enter the e-mail and password of the iRobot app in the **iRobot** section of the setup page. The bridge only reads the favorites (twice a day, or when you press Refresh on the robot); the robot itself is controlled locally by the hub. Uses [roombapy-prime](https://github.com/johnnyh1975/roombapy-prime), an unofficial client: iRobot limits the number of logins per account.
+
 ## Notes
 
 * FGLair has no local API and no official cloud API. The bridge uses [ayla-iot-unofficial](https://pypi.org/project/ayla-iot-unofficial/), the library the Home Assistant Fujitsu FGLair integration uses. It can stop working when Fujitsu changes the cloud.

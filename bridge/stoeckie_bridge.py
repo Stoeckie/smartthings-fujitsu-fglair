@@ -5,6 +5,8 @@ Sources
     (developer.electrolux.one): state at start, live updates over SSE, poll as fallback.
   * Fujitsu air conditioners with an FGLair wifi adapter, via the Ayla cloud that the FGLair app uses
     (library ayla-iot-unofficial, the same one Home Assistant uses). Polled every 60 s.
+  * iRobot account (optional): favorite names and rooms for the "iRobot Roomba (local)" Edge driver
+    (library roombapy-prime). Only read, twice a day; the robot itself is controlled locally by the hub.
 
 Credentials live only in config.json next to this script (never in the code).
 
@@ -15,6 +17,7 @@ LAN API (default port 8787, no auth, LAN only)
       dryer:   run | pause | resume | stop | refresh
       aircon:  on | off | mode (auto cool dry fan heat) | setpoint (C) | fan (quiet low medium high auto)
                | swing (off vertical horizontal both) | refresh
+  GET  /stbridge/irobot/<blid>[?refresh=1] -> {"name", "favorites": [{name, id, command, params}], "updated"}
 
 Usage
   python stoeckie_bridge.py           run the bridge
@@ -41,7 +44,7 @@ from typing import Any
 
 from aiohttp import web
 
-VERSION = "2026-10-30c"
+VERSION = "2026-10-30d"
 HERE = Path(__file__).resolve().parent
 # Data folder: next to the script on Windows, /data in the Docker image (STBRIDGE_DATA)
 DATA = Path(os.environ.get("STBRIDGE_DATA") or HERE)
@@ -409,6 +412,94 @@ class FGLair:
                 await asyncio.sleep(int(self.f.get("poll_seconds", 60)))
 
 
+# ---------------------------------------------------------------- iRobot account (favorites for the Roomba driver)
+
+IROBOT: dict[str, Any] = {"robots": {}, "updated": 0, "error": None, "refresh": None}
+
+
+def irobot_configured(r: dict[str, Any]) -> bool:
+    return bool(r.get("username") and r.get("password") and not str(r.get("password")).startswith("PLAK_HIER"))
+
+
+def favorites_for(raw: list[dict[str, Any]], blid: str) -> list[dict[str, Any]]:
+    """Turn the account's favorites into local start commands for one robot."""
+    out = []
+    for f in raw or []:
+        if not isinstance(f, dict) or f.get("deleted") or f.get("hidden"):
+            continue
+        cmds = [c for c in (f.get("commanddefs") or []) if isinstance(c, dict)]
+        mine = [c for c in cmds if str(c.get("robot_id") or c.get("robotId") or blid) == blid]
+        if not mine:
+            continue
+        c = mine[0]
+        # "id" names the command inside the favorite; the robot does not need it
+        params = {k: v for k, v in c.items()
+                  if k not in ("id", "robot_id", "robotId", "command", "time", "initiator")}
+        out.append({"name": f.get("name") or "Favorite", "id": f.get("favorite_id"),
+                    "command": c.get("command") or "start", "params": params, "order": f.get("display_order")})
+    out.sort(key=lambda x: (x["order"] is None, x["order"] or 0))
+    return out
+
+
+class IRobotCloud:
+    REFRESH = 12 * 3600
+    MIN_GAP = 600
+
+    def __init__(self, cfg: dict[str, Any]) -> None:
+        self.r = cfg.get("irobot") or {}
+        self.account = None
+        self.wake = asyncio.Event()
+
+    async def _fetch(self) -> None:
+        raw = await self.account.classic_rest().get_favorites()
+        robots = {}
+        for blid, entry in (self.account.robots or {}).items():
+            robots[blid] = {"name": getattr(entry, "name", None), "favorites": favorites_for(raw, blid)}
+        IROBOT.update(robots=robots, updated=int(time.time()), error=None)
+        log.info("[irobot] %d favorite(s) for %d robot(s)", sum(len(r["favorites"]) for r in robots.values()),
+                 len(robots))
+
+    async def run(self) -> None:
+        if not irobot_configured(self.r):
+            log.info("[irobot] not configured (optional: favorite names for the Roomba driver)")
+            return
+        import aiohttp
+        from roombapy_prime import CloudAccount
+        from roombapy_prime.auth import AuthCredentialsError, AuthRateLimitedError
+        IROBOT["refresh"] = self.wake
+        async with aiohttp.ClientSession() as session:
+            last = 0.0
+            while True:
+                try:
+                    if self.account is None:
+                        self.account = await CloudAccount.login(session, self.r["username"], self.r["password"],
+                                                                str(self.r.get("country") or "NL").upper())
+                        log.info("[irobot] logged in, %d robot(s) on the account", len(self.account.robots or {}))
+                    last = time.time()
+                    await self._fetch()
+                except AuthCredentialsError as ex:
+                    IROBOT["error"] = "login refused (check e-mail and password)"
+                    log.error("[irobot] login refused: %s. Not retrying; fix it on the setup page", ex)
+                    return
+                except AuthRateLimitedError as ex:
+                    IROBOT["error"] = "iRobot asks to wait (too many logins)"
+                    log.warning("[irobot] rate limited: %s (retry in 30 min)", ex)
+                    self.account = None
+                    await asyncio.sleep(1800)
+                    continue
+                except Exception as ex:  # noqa: BLE001
+                    IROBOT["error"] = str(ex)[:200]
+                    log.warning("[irobot] update failed: %s", ex)
+                self.wake.clear()
+                try:
+                    await asyncio.wait_for(self.wake.wait(), timeout=self.REFRESH)
+                except asyncio.TimeoutError:
+                    pass
+                gap = self.MIN_GAP - (time.time() - last)  # refresh from the hub: at most every 10 minutes
+                if gap > 0:
+                    await asyncio.sleep(gap)
+
+
 # ---------------------------------------------------------------- LAN HTTP API
 
 SETUP_HTML = """<!doctype html><html lang="nl"><head><meta charset="utf-8">
@@ -434,7 +525,15 @@ een access token en refresh token.</p>
 <label>Wachtwoord</label><input name="password" type="password" autocomplete="off" required>
 <label>Regio</label><select name="region"><option value="eu">Europa</option><option value="default">Overig</option>
 <option value="cn">China</option></select>
-<button type="submit">FGLair opslaan en verbinden</button></form></body></html>"""
+<button type="submit">FGLair opslaan en verbinden</button></form>
+<h3>iRobot (optioneel)</h3>
+<p>E-mail en wachtwoord van de iRobot app. De bridge leest alleen de namen en kamers van je favorieten,
+twee keer per dag, voor de Roomba driver op de hub. De robot zelf wordt lokaal bediend.</p>
+<form method="post"><input type="hidden" name="section" value="irobot">
+<label>E-mail</label><input name="username" type="email" autocomplete="off" required>
+<label>Wachtwoord</label><input name="password" type="password" autocomplete="off" required>
+<label>Land (2 letters)</label><input name="country" value="NL" maxlength="2" required>
+<button type="submit">iRobot opslaan en verbinden</button></form></body></html>"""
 
 
 def make_app(bridge_id: str, on_setup=None) -> web.Application:
@@ -500,6 +599,15 @@ def make_app(bridge_id: str, on_setup=None) -> web.Application:
                 f"{d['name']} ({d['state'].get('mode')}, {d['state'].get('setpoint')} C)" for d in acs))
         else:
             lines.append("FGLair ingesteld, nog geen airco gevonden (zie bridge.log).")
+        r = cfg.get("irobot") or {}
+        if irobot_configured(r):
+            if IROBOT.get("error"):
+                lines.append("iRobot: " + str(IROBOT["error"]))
+            elif IROBOT.get("updated"):
+                lines.append("iRobot verbonden: " + ", ".join(
+                    f"{v.get('name') or k}: {len(v['favorites'])} favoriet(en)" for k, v in IROBOT["robots"].items()))
+            else:
+                lines.append("iRobot ingesteld, bezig met ophalen.")
         return "<br>".join(html.escape(x) for x in lines)
 
     async def setup_get(req):
@@ -513,7 +621,14 @@ def make_app(bridge_id: str, on_setup=None) -> web.Application:
         form = await req.post()
         cfg = load_config()
         section = str(form.get("section", "aeg"))
-        if section == "fglair":
+        if section == "irobot":
+            r = cfg.setdefault("irobot", {})
+            r["username"] = str(form.get("username", "")).strip()
+            r["password"] = str(form.get("password", ""))
+            r["country"] = str(form.get("country", "NL")).strip().upper()[:2] or "NL"
+            save_config(cfg)
+            log.info("[setup] iRobot login saved")
+        elif section == "fglair":
             f = cfg.setdefault("fglair", {})
             f["username"] = str(form.get("username", "")).strip()
             f["password"] = str(form.get("password", ""))
@@ -537,6 +652,17 @@ def make_app(bridge_id: str, on_setup=None) -> web.Application:
 
     async def devices(_req):
         return web.json_response({"devices": list(REG.devices.values()), "time": int(time.time())})
+
+    async def irobot(req):
+        blid = req.match_info["blid"]
+        if req.query.get("refresh") and IROBOT.get("refresh"):
+            IROBOT["refresh"].set()
+        robot = IROBOT["robots"].get(blid)
+        if robot is None:
+            return web.json_response({"error": "unknown robot or iRobot not set up", "updated": IROBOT["updated"]},
+                                     status=404)
+        return web.json_response({"name": robot["name"], "favorites": robot["favorites"],
+                                  "updated": IROBOT["updated"]})
 
     async def command(req):
         dev_id = req.match_info["dev_id"]
@@ -564,6 +690,7 @@ def make_app(bridge_id: str, on_setup=None) -> web.Application:
     app.router.add_get("/stbridge/info", info)
     app.router.add_get("/stbridge/devices", devices)
     app.router.add_post("/stbridge/devices/{dev_id}/command", command)
+    app.router.add_get("/stbridge/irobot/{blid}", irobot)
     return app
 
 
@@ -637,7 +764,7 @@ async def serve(args) -> None:
         bridge_id = cfg["bridge_id"] = uuid.uuid4().hex[:12]
         save_config(cfg)
     port = int(cfg.get("port", 8787))
-    sources = {"aeg": Electrolux, "fglair": FGLair}
+    sources = {"aeg": Electrolux, "fglair": FGLair, "irobot": IRobotCloud}
     tasks: dict[str, asyncio.Task] = {}
 
     def start(section: str) -> None:
