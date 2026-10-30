@@ -47,7 +47,7 @@ from typing import Any
 
 from aiohttp import web
 
-VERSION = "2026-10-30f"
+VERSION = "2026-10-30g"
 HERE = Path(__file__).resolve().parent
 # Data folder: next to the script on Windows, /data in the Docker image (STBRIDGE_DATA)
 DATA = Path(os.environ.get("STBRIDGE_DATA") or HERE)
@@ -472,6 +472,22 @@ def car_state(v: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def skoda_settings(poll: Any, temp: Any, current: dict[str, Any]) -> dict[str, Any]:
+    """Validated poll interval (5..60 min) and climate temperature (16..29 C)."""
+    out = {"poll_minutes": current.get("poll_minutes", 10), "climate_temp": current.get("climate_temp", 21.0)}
+    try:
+        if poll not in (None, ""):
+            out["poll_minutes"] = max(5, min(60, int(float(str(poll).replace(",", ".")))))
+    except ValueError:
+        pass
+    try:
+        if temp not in (None, ""):
+            out["climate_temp"] = max(16.0, min(29.0, round(float(str(temp).replace(",", ".")) * 2) / 2))
+    except ValueError:
+        pass
+    return out
+
+
 class Skoda:
     POLL = 600  # 6 calls per hour by default, leaves room for commands within the 20/hour limit
 
@@ -486,6 +502,7 @@ class Skoda:
         self.wake = asyncio.Event()
         self.pause_until = 0.0
         self.last: dict[str, Any] = {}
+        self.expect: tuple | None = None  # (command, value, retries left) after a command
 
     async def _call(self, method: str, path: str, body: Any = None) -> Any:
         if time.time() < self.pause_until:
@@ -511,11 +528,22 @@ class Skoda:
         v = data.get("vehicle") or {}
         state = car_state(v)
         state["keyExpires"] = self.last.get("keyExpires")
+        state["pollMinutes"] = self.POLL // 60
+        state["climateTemp"] = float(self.k.get("climate_temp") or 21)
         state["errors"] = [e.get("type") for e in data.get("errors") or [] if isinstance(e, dict)]
         name = v.get("name") or v.get("licensePlate") or "Škoda"
         REG.upsert("skoda-" + self.vin, "car", name, state, True, self._command())
         log.info("[skoda] %s: battery %s%%, %s km, charging %s, plug %s", name, state["battery"],
                  state["electricRange"], state["charging"], state["plug"])
+        if self.expect:
+            cmd, value, left = self.expect
+            done = {"on": state["charging"] == "CHARGING", "off": state["charging"] != "CHARGING",
+                    "climate_on": state["climate"] not in (None, "OFF"), "climate_off": state["climate"] == "OFF",
+                    "limit": state["targetSoc"] == value}.get(cmd, True)
+            self.expect = None
+            if not done and left > 0:
+                self.expect = (cmd, value, left - 1)
+                asyncio.get_running_loop().call_later(60, self.wake.set)
 
     def _command(self):
         async def handler(cmd: str, value: Any) -> None:
@@ -523,6 +551,19 @@ class Skoda:
                      "climate_off": "/air-conditioning/stop"}
             if cmd == "refresh":
                 self.wake.set()
+                return
+            if cmd == "settings":  # from the SmartThings device settings
+                v = value if isinstance(value, dict) else {}
+                cfg = load_config()
+                k = cfg.setdefault("skoda", {})
+                new = skoda_settings(v.get("poll_minutes"), v.get("climate_temp"), k)
+                if new != {"poll_minutes": k.get("poll_minutes", 10), "climate_temp": k.get("climate_temp", 21.0)}:
+                    k.update(new)
+                    save_config(cfg)
+                self.k.update(new)
+                self.POLL = int(new["poll_minutes"]) * 60
+                log.info("[skoda] settings from SmartThings: every %s min, climate %s C", new["poll_minutes"],
+                         new["climate_temp"])
                 return
             if cmd == "climate_on":
                 temp = float(self.k.get("climate_temp") or 21)
@@ -536,8 +577,10 @@ class Skoda:
             else:
                 raise ValueError(f"unsupported command {cmd}")
             log.info("[skoda] command %s %s", cmd, "" if value is None else value)
-            # the car needs a while to report back; refresh once after 90 s
-            asyncio.get_running_loop().call_later(90, self.wake.set)
+            # the car needs a moment to report back: look after 30 s, and once more 60 s later if the
+            # change is not visible yet (each look costs one of the 20 requests per hour)
+            self.expect = (cmd, value, 1)
+            asyncio.get_running_loop().call_later(30, self.wake.set)
         return handler
 
     async def run(self) -> None:
@@ -678,13 +721,18 @@ een access token en refresh token.</p>
 <option value="cn">China</option></select>
 <button type="submit">FGLair opslaan en verbinden</button></form>
 <h3>Škoda</h3>
-<p>Maak in de MyŠkoda app een API key aan (open <b>go.skoda.eu/api-keys</b> op je telefoon) en kies je auto.
+<p>Maak in de MyŠkoda app (8.16 of nieuwer) een API key aan: <b>Instellingen, Smart Home, API-sleutels</b>, en kies je auto.
 Het VIN (17 tekens) staat in de app bij de auto en op het kentekenbewijs.</p>
 <form method="post"><input type="hidden" name="section" value="skoda">
 <label>API key</label><input name="api_key" autocomplete="off" required>
 <label>VIN</label><input name="vin" maxlength="17" minlength="17" required>
-<label>Temperatuur voor airco aan (°C)</label><input name="climate_temp" value="21" required>
 <button type="submit">Škoda opslaan en verbinden</button></form>
+<form method="post"><input type="hidden" name="section" value="skoda_settings">
+<label>Auto bijwerken elke (minuten, minimaal 5; Škoda staat 20 opvragingen per uur toe)</label>
+<input name="poll_minutes" type="number" min="5" max="60" value="{skoda_poll}" required>
+<label>Temperatuur voor airco aan (°C)</label><input name="climate_temp" value="{skoda_temp}" required>
+<button type="submit">Instellingen opslaan</button></form>
+<p>Deze instellingen staan ook bij de auto in de SmartThings app (Instellingen).</p>
 <h3>iRobot (optioneel)</h3>
 <p>E-mail en wachtwoord van de iRobot app. De bridge leest alleen de namen en kamers van je favorieten,
 twee keer per dag, voor de Roomba driver op de hub. De robot zelf wordt lokaal bediend.</p>
@@ -781,7 +829,11 @@ def make_app(bridge_id: str, on_setup=None) -> web.Application:
     async def setup_get(req):
         if not local_only(req):
             return web.Response(status=403, text="setup alleen op deze pc (localhost)")
-        return web.Response(text=SETUP_HTML.replace("{status}", status_text()), content_type="text/html")
+        k = load_config().get("skoda") or {}
+        page = (SETUP_HTML.replace("{status}", status_text())
+                .replace("{skoda_poll}", html.escape(str(k.get("poll_minutes", 10))))
+                .replace("{skoda_temp}", html.escape(str(k.get("climate_temp", 21)))))
+        return web.Response(text=page, content_type="text/html")
 
     async def setup_post(req):
         if not local_only(req):
@@ -793,12 +845,14 @@ def make_app(bridge_id: str, on_setup=None) -> web.Application:
             k = cfg.setdefault("skoda", {})
             k["api_key"] = "".join(str(form.get("api_key", "")).split())
             k["vin"] = "".join(str(form.get("vin", "")).split()).upper()
-            try:
-                k["climate_temp"] = max(16.0, min(29.0, float(str(form.get("climate_temp", "21")).replace(",", "."))))
-            except ValueError:
-                k["climate_temp"] = 21.0
             save_config(cfg)
             log.info("[setup] Škoda key saved")
+        elif section == "skoda_settings":
+            k = cfg.setdefault("skoda", {})
+            k.update(skoda_settings(form.get("poll_minutes"), form.get("climate_temp"), k))
+            save_config(cfg)
+            log.info("[setup] Škoda settings: every %s min, climate %s C", k["poll_minutes"], k["climate_temp"])
+            section = "skoda"
         elif section == "irobot":
             r = cfg.setdefault("irobot", {})
             r["username"] = str(form.get("username", "")).strip()

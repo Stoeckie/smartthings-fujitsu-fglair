@@ -78,6 +78,9 @@ def test_source_and_commands(monkeypatch):
         await h("off", None)
         await h("climate_on", None)
         await h("limit", 80)
+        await h("settings", {"poll_minutes": 15, "climate_temp": 22})
+        assert src.POLL == 900 and src.k["climate_temp"] == 22.0
+        assert sb.load_config()["skoda"]["poll_minutes"] == 15
         posted = [(m, p, b) for m, p, b in calls if m != "GET"]
         assert posted[0][1].endswith("/charging/stop")
         assert posted[1][1].endswith("/air-conditioning/start") and json.loads(posted[1][2])["targetTemperature"]["value"] == 20
@@ -85,3 +88,9 @@ def test_source_and_commands(monkeypatch):
         task.cancel()
         await runner.cleanup()
     asyncio.run(main())
+
+
+def test_settings_validation():
+    assert sb.skoda_settings("3", "35", {}) == {"poll_minutes": 5, "climate_temp": 29.0}
+    assert sb.skoda_settings("15", "20,6", {}) == {"poll_minutes": 15, "climate_temp": 20.5}
+    assert sb.skoda_settings("", "x", {"poll_minutes": 12, "climate_temp": 22.0}) == {"poll_minutes": 12, "climate_temp": 22.0}

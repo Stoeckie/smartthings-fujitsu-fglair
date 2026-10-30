@@ -12,7 +12,7 @@ local log = require "log"
 local cosock = require "cosock"
 local api = require "bridge_api"
 
-local BUILD = "2026-10-30b"
+local BUILD = "2026-10-30c"
 local FAST_POLL_SECS = 2
 local FAST_POLL_FOR = 40
 local SCAN_CONCURRENCY = 16
@@ -383,7 +383,16 @@ local function device_added(driver, device)
 end
 
 local function info_changed(driver, device, event, args)
-  if is_parent(device) then schedule_poll(driver, device) end
+  if is_parent(device) then
+    schedule_poll(driver, device)
+    return
+  end
+  -- car settings: pass them to the bridge
+  local old = args and args.old_st_store and args.old_st_store.preferences or {}
+  local p = device.preferences or {}
+  if p.pollMinutes ~= nil and (p.pollMinutes ~= old.pollMinutes or p.climateTemp ~= old.climateTemp) then
+    send(driver, device, "settings", { poll_minutes = p.pollMinutes, climate_temp = p.climateTemp })
+  end
 end
 
 local function device_removed(driver, device)
