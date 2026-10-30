@@ -57,7 +57,7 @@ function NEW_DEVICE(info)
               parent_assigned_child_key = info.parent_assigned_child_key, label = info.label,
               events = {}, state = "online",
               profile = { components = { main = { id = "main" }, outdoor = { id = "outdoor" }, plug = { id = "plug" },
-                                         climate = { id = "climate" }, doors = { id = "doors" } } } }
+                                         climate = { id = "climate" }, status = { id = "status" } } } }
   function d:get_field(k) return self.fields[k] end
   function d:set_field(k, v) self.fields[k] = v end
   function d:emit_event(e) self.events[#self.events + 1] = { comp = "main", path = e.path, arg = e.arg } end
@@ -209,9 +209,9 @@ def test_car_flow(bridge):
         e = car.events[i]
         ev[f"{e.comp}:{e.path}"] = e.arg
     assert ev["main:cap.battery.battery"] == 64
-    assert "main:cap.switch.switch.off" in ev and "main:cap.presenceSensor.presence.present" in ev
+    assert "main:cap.switch.switch.off" in ev and "status:cap.presenceSensor.presence.present" in ev
     assert "plug:cap.contactSensor.contact.closed" in ev and "climate:cap.switch.switch.off" in ev
-    assert "doors:cap.contactSensor.contact.closed" in ev
+    assert "status:cap.contactSensor.contact.closed" in ev
 
     def state():
         with urllib.request.urlopen(f"http://127.0.0.1:{bridge}/stbridge/devices") as r:

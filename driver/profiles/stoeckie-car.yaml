@@ -8,14 +8,12 @@ components:
         version: 1
       - id: powerMeter
         version: 1
-      - id: presenceSensor
-        version: 1
       - id: refresh
         version: 1
     categories:
       - name: Others
   - id: plug
-    label: Plug
+    label: Charging cable
     capabilities:
       - id: contactSensor
         version: 1
@@ -24,9 +22,11 @@ components:
     capabilities:
       - id: switch
         version: 1
-  - id: doors
-    label: Doors
+  - id: status
+    label: Car
     capabilities:
+      - id: presenceSensor
+        version: 1
       - id: contactSensor
         version: 1
 preferences:

@@ -12,7 +12,7 @@ local log = require "log"
 local cosock = require "cosock"
 local api = require "bridge_api"
 
-local BUILD = "2026-10-30c"
+local BUILD = "2026-10-30d"
 local FAST_POLL_SECS = 2
 local FAST_POLL_FOR = 40
 local SCAN_CONCURRENCY = 16
@@ -196,9 +196,7 @@ local function emit_car(dev, s)
   if s.chargePowerKw ~= nil then
     try_emit(dev, function() return capabilities.powerMeter.power({ value = (tonumber(s.chargePowerKw) or 0) * 1000, unit = "W" }) end)
   end
-  if s.atHome ~= nil then
-    try_emit(dev, function() return s.atHome and capabilities.presenceSensor.presence.present() or capabilities.presenceSensor.presence.not_present() end)
-  end
+  -- main: battery, charging on/off and power; then cable, climate, and the car itself (home, doors)
   local plug = tostring(s.plug or ""):upper()
   if plug ~= "" then
     comp_emit(dev, "plug", function() return plug == "CONNECTED" and contact.contact.closed() or contact.contact.open() end)
@@ -207,9 +205,12 @@ local function emit_car(dev, s)
   if climate ~= "" then
     comp_emit(dev, "climate", function() return (climate == "OFF" or climate == "INVALID") and capabilities.switch.switch.off() or capabilities.switch.switch.on() end)
   end
+  if s.atHome ~= nil then
+    comp_emit(dev, "status", function() return s.atHome and capabilities.presenceSensor.presence.present() or capabilities.presenceSensor.presence.not_present() end)
+  end
   local doors = tostring(s.doors or ""):upper()
   if doors ~= "" then
-    comp_emit(dev, "doors", function() return doors == "CLOSED" and contact.contact.closed() or contact.contact.open() end)
+    comp_emit(dev, "status", function() return doors == "CLOSED" and contact.contact.closed() or contact.contact.open() end)
   end
 end
 

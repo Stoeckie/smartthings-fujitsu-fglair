@@ -60,7 +60,7 @@ Bridge LAN API (no auth, LAN only): `GET /stbridge/info`, `GET /stbridge/devices
 
 ## Škoda (official MyŠkoda public API)
 
-The bridge also reads a **Škoda** car through Škoda's official public API (free, personal use): battery %, charging on/off and power, at home (saved charging location), plug, doors, and climate on/off. In SmartThings the main switch starts and stops charging; the Climate switch starts and stops the air conditioning.
+The bridge also reads a **Škoda** car through Škoda's official public API (free, personal use). In SmartThings the car shows, grouped: **main** battery %, charging on/off (switch) and charging power; **Charging cable** plugged in or not; **Climate** air conditioning on/off; **Car** at home (saved charging location) and doors.
 
 1. In the MyŠkoda app (version 8.16 or newer) create an API key: open **go.skoda.eu/api-keys** on your phone and pick your car.
 2. Enter the key and the VIN (17 characters) in the **Škoda** section of the setup page.
