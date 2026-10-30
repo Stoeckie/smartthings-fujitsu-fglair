@@ -65,7 +65,7 @@ The bridge also reads a **Škoda** car through Škoda's official public API (fre
 1. In the MyŠkoda app (version 8.16 or newer) create an API key: open **go.skoda.eu/api-keys** on your phone and pick your car.
 2. Enter the key and the VIN (17 characters) in the **Škoda** section of the setup page.
 
-The API allows 20 calls per hour, so the bridge reads the car every 6 minutes and once more 90 s after a command. Keys expire; the setup page shows until when.
+The API allows 20 calls per hour, so the bridge reads the car every 10 minutes (`"poll_minutes"` in `config.json`, at least 5) and once more 90 s after a command. Keys expire; the setup page shows until when.
 
 ## iRobot favorites (optional)
 

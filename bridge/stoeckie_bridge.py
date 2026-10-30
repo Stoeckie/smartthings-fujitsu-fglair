@@ -6,7 +6,7 @@ Sources
   * Fujitsu air conditioners with an FGLair wifi adapter, via the Ayla cloud that the FGLair app uses
     (library ayla-iot-unofficial, the same one Home Assistant uses). Polled every 60 s.
   * Škoda cars via the official MyŠkoda public API (API key from the MyŠkoda app): battery, range, charging,
-    plug, doors, climate; start/stop charging and climate. Polled every 6 minutes (the API allows 20 calls/hour).
+    plug, doors, climate; start/stop charging and climate. Polled every 10 minutes (the API allows 20 calls/hour).
   * iRobot account (optional): favorite names and rooms for the "iRobot Roomba (local)" Edge driver
     (library roombapy-prime). Only read, twice a day; the robot itself is controlled locally by the hub.
 
@@ -47,7 +47,7 @@ from typing import Any
 
 from aiohttp import web
 
-VERSION = "2026-10-30e"
+VERSION = "2026-10-30f"
 HERE = Path(__file__).resolve().parent
 # Data folder: next to the script on Windows, /data in the Docker image (STBRIDGE_DATA)
 DATA = Path(os.environ.get("STBRIDGE_DATA") or HERE)
@@ -473,11 +473,15 @@ def car_state(v: dict[str, Any]) -> dict[str, Any]:
 
 
 class Skoda:
-    POLL = 360  # 10 calls per hour, leaves room for commands within the 20/hour limit
+    POLL = 600  # 6 calls per hour by default, leaves room for commands within the 20/hour limit
 
     def __init__(self, cfg: dict[str, Any]) -> None:
         self.k = cfg.get("skoda") or {}
         self.vin = str(self.k.get("vin") or "").strip().upper()
+        try:  # optional "poll_minutes" in config.json, at least 5
+            self.POLL = max(300, int(float(self.k.get("poll_minutes") or 10) * 60))
+        except (TypeError, ValueError):
+            pass
         self.session = None
         self.wake = asyncio.Event()
         self.pause_until = 0.0
