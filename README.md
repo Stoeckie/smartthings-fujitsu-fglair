@@ -35,6 +35,8 @@ Tested with indoor units with adapters `AP-WF2E` and `AP-WD1E` (FGLair app 3.4).
 
 Set the Windows network to **Private** and give the pc a fixed IP (DHCP reservation), otherwise the hub can not reach the bridge. The login only lives in `config.json` on the pc (it is in `.gitignore`).
 
+Security: the setup page only answers on the pc itself (or the networks in `STBRIDGE_SETUP_ALLOW`), only when opened by IP or `localhost`, and refuses forms posted from other websites. The LAN API (`/stbridge/...`) only answers private and local addresses.
+
 To update: copy the new files over the old ones and run `install.bat` again; `config.json` stays.
 
 ## 1b. Bridge in Docker (instead of Windows)

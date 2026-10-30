@@ -41,7 +41,7 @@ from typing import Any
 
 from aiohttp import web
 
-VERSION = "2026-10-30b"
+VERSION = "2026-10-30c"
 HERE = Path(__file__).resolve().parent
 # Data folder: next to the script on Windows, /data in the Docker image (STBRIDGE_DATA)
 DATA = Path(os.environ.get("STBRIDGE_DATA") or HERE)
@@ -438,16 +438,48 @@ een access token en refresh token.</p>
 
 
 def make_app(bridge_id: str, on_setup=None) -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[])
 
     def local_only(req) -> bool:
-        if req.remote in ("127.0.0.1", "::1"):
-            return True
+        """Setup page: only from this pc (or STBRIDGE_SETUP_ALLOW), only addressed by IP or localhost (blocks
+        DNS rebinding) and never posted from another site (blocks cross-site requests from a browser)."""
         try:
             ip = ipaddress.ip_address(req.remote or "")
         except ValueError:
             return False
-        return any(ip in net for net in SETUP_ALLOW)
+        if not (ip.is_loopback or any(ip in net for net in SETUP_ALLOW)):
+            return False
+        host = (req.host or "").rsplit(":", 1)[0].strip("[]").lower()
+        if host != "localhost":
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                return False
+        origin = req.headers.get("Origin")
+        if origin and origin != "null":
+            from urllib.parse import urlsplit
+            if urlsplit(origin).netloc.lower() != (req.host or "").lower():
+                return False
+        elif origin == "null":
+            return False
+        return True
+
+    @web.middleware
+    async def guard(req, handler):
+        # the LAN API is meant for the hub: refuse anything that is not from a private or local address
+        if req.path.startswith("/stbridge/"):
+            try:
+                ip = ipaddress.ip_address(req.remote or "")
+            except ValueError:
+                ip = None
+            if ip is None or not (ip.is_private or ip.is_loopback or ip.is_link_local):
+                return web.json_response({"error": "forbidden"}, status=403)
+        resp = await handler(req)
+        if req.path.startswith("/setup"):
+            resp.headers["Cache-Control"] = "no-store"
+            resp.headers["X-Frame-Options"] = "DENY"
+            resp.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'"
+        return resp
 
     def status_text() -> str:
         cfg = load_config()
@@ -522,6 +554,7 @@ def make_app(bridge_id: str, on_setup=None) -> web.Application:
             return web.json_response({"error": str(ex)}, status=500)
         return web.json_response({"ok": True, "device": REG.devices.get(dev_id)})
 
+    app.middlewares.append(guard)
     app.router.add_get("/setup", setup_get)
     app.router.add_post("/setup", setup_post)
     async def root(_req):
