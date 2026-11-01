@@ -2,7 +2,7 @@
 
 Get **Fujitsu air conditioners with an FGLair wifi adapter** into SmartThings: on/off, mode, target temperature, fan speed, swing, room and outdoor temperature.
 
-The code lives in **[Stoeckie/smartthings-stoeckie-bridge](https://github.com/Stoeckie/smartthings-stoeckie-bridge)**: one small bridge (Windows or Docker) plus the Edge driver **Stoeckie Bridge (local)**. The same bridge also does AEG / Electrolux dryers, Škoda cars and the VELUX ACTIVE departure mode; you only set up what you have.
+The code lives in **[Stoeckie/smartthings-stoeckie-bridge](https://github.com/Stoeckie/smartthings-stoeckie-bridge)**: one small bridge (Windows or Docker) plus the Edge driver **Stoeckie Bridge (local)**. The same bridge also does AEG / Electrolux dryers, Škoda cars the VELUX ACTIVE departure mode and a Buienradar rain radar; you only set up what you have.
 
 ## What you get
 
