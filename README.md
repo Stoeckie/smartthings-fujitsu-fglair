@@ -7,12 +7,11 @@ The code lives in **[Stoeckie/smartthings-stoeckie-bridge](https://github.com/St
 ## What you get
 
 * `switch`: on / off
-* `airConditionerMode`: auto, cool, dry, fan only, heat (what the unit supports)
+* `airConditionerMode`: auto, cool, dry, fan only, heat (what the unit supports), plus **Minimum Heat** (`minHeat`) on units that have it, just like in the FGLair app (keeps the room at a low frost protection temperature, handy for holiday homes)
 * `thermostatCoolingSetpoint`: the target temperature in every mode, heat included (16 to 30 °C, 0.5 steps)
 * `airConditionerFanMode`: quiet, low, medium, high, auto
 * `fanOscillationMode`: fixed, vertical, horizontal, all (what the unit supports)
 * `temperatureMeasurement`: room temperature (models with a sensor), plus an `outdoor` component with the outdoor temperature
-* `minHeat` component (switch): **Minimum Heat**, only on units that report the `min_heat` property (keeps the room at a low frost protection temperature, handy for holiday homes)
 
 Tested with adapters `AP-WF2E` and `AP-WD1E` (FGLair app 3.4). Changes from the FGLair app or the remote show up within a minute.
 
