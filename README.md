@@ -7,8 +7,8 @@ The code lives in **[Stoeckie/smartthings-stoeckie-bridge](https://github.com/St
 ## What you get
 
 * `switch`: on / off
-* `airConditionerMode`: auto, cool, dry, fan only, heat (what the unit supports), plus **Minimum Heat** (`minHeat`) on units that have it, just like in the FGLair app (keeps the room at a low frost protection temperature, handy for holiday homes)
-* `thermostatCoolingSetpoint`: the target temperature in every mode, heat included (16 to 30 °C, 0.5 steps)
+* Mode: auto, cool, dry, fan only, heat (what the unit supports), plus **Minimum Heat** on units that have it, just like in the FGLair app (keeps the room at a low frost protection temperature, handy for holiday homes); labels in English or Dutch following the phone language
+* Target temperature, shown as **Set temperature** (custom capability, also kept as standard `thermostatCoolingSetpoint` for voice assistants), 16 to 30 °C in 0.5 steps, in every mode
 * `airConditionerFanMode`: quiet, low, medium, high, auto
 * `fanOscillationMode`: fixed, vertical, horizontal, all (what the unit supports)
 * `temperatureMeasurement`: room temperature (models with a sensor), plus an `outdoor` component with the outdoor temperature
