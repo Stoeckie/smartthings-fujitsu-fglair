@@ -11,7 +11,8 @@ The code lives in **[Stoeckie/smartthings-stoeckie-bridge](https://github.com/St
 * Target temperature, shown as **Set temperature** (custom capability, also kept as standard `thermostatCoolingSetpoint` for voice assistants), 16 to 30 °C in 0.5 steps, in every mode
 * `airConditionerFanMode`: quiet, low, medium, high, auto
 * `fanOscillationMode`: fixed, vertical, horizontal, all (what the unit supports)
-* **Airflow direction** (Blaasrichting): louver position 1 to n when swing is off, on units that report positions (both test units have 4)
+* **Vertical airflow** (Blaasrichting verticaal, 1 = top): louver position 1 to n when swing is off, on units that report positions (both test units have 4)
+* **Horizontal airflow** (Blaasrichting horizontaal): left/right louver position 1 to n, only on units that have horizontal louvers (since bridge 2026-11-08b, driver 2026-11-08d)
 * `temperatureMeasurement`: room temperature (models with a sensor), plus an `outdoor` component with the outdoor temperature (only on units that report one; a unit without an outdoor sensor switches to a layout without it by itself)
 
 Tested with adapters `AP-WF2E` and `AP-WD1E` (FGLair app 3.4). Changes from the FGLair app or the remote show up within a minute.
