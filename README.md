@@ -2,13 +2,14 @@
 
 Get **Fujitsu air conditioners with an FGLair wifi adapter** into SmartThings: on/off, mode, target temperature, fan speed, swing, Minimum Heat, room and outdoor temperature.
 
-The code lives in **[Stoeckie/smartthings-stoeckie-bridge](https://github.com/Stoeckie/smartthings-stoeckie-bridge)**: one small bridge (Windows or Docker) plus the Edge driver **Stoeckie Bridge (local)**. The same bridge also does AEG / Electrolux dryers, Škoda cars, the VELUX ACTIVE departure mode and a rain radar (Buienradar in NL/BE, Open-Meteo worldwide); you only set up what you have. The Stoeckie Bridge device has a Connection status (Connected or Offline), so a routine can notify you when the bridge goes offline.
+The code lives in **[Stoeckie/smartthings-stoeckie-bridge](https://github.com/Stoeckie/smartthings-stoeckie-bridge)**: one small bridge (Windows or Docker) plus the Edge driver **Stoeckie Bridge (local)**. The same bridge also does AEG / Electrolux dryers, Škoda cars, the VELUX ACTIVE departure mode, a rain radar (Buienradar in NL/BE, Open-Meteo worldwide), Home Connect appliances, Tuya heaters and Amazon Echo; you only set up what you have. The Stoeckie Bridge device has a Connection status (Connected or Offline), so a routine can notify you when the bridge goes offline.
 
 ## What you get
 
 * `switch`: on / off
 * Mode: auto, cool, dry, fan only, heat (what the unit supports), plus **Minimum Heat** on units that have it, just like in the FGLair app (keeps the room at a low frost protection temperature, handy for holiday homes); labels in English or Dutch following the phone language
 * Target temperature, shown as **Set temperature** (custom capability, also kept as standard `thermostatCoolingSetpoint` for voice assistants), 16 to 30 °C in 0.5 steps, in every mode
+* **Fahrenheit**: with Temperature unit °F the set temperature is a slider in whole °F (60 to 88) and uses Fujitsu's own table, the same as the FGLair app and remote (60 to 88 °F is 16 to 30 °C in 0.5 steps, 73 °F = 22.5 °C); also from routines and the standard thermostat setpoint (driver 2026-11-10d)
 * `airConditionerFanMode`: quiet, low, medium, high, auto
 * `fanOscillationMode`: fixed, vertical, horizontal, all (what the unit supports)
 * **Vertical airflow** (Blaasrichting verticaal, 1 = top): louver position 1 to n when swing is off, on units that report positions (both test units have 4)
