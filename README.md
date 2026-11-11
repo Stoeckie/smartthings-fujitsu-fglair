@@ -26,6 +26,7 @@ Tested with adapters `AP-WF2E` and `AP-WD1E` (FGLair app 3.4). Changes from the 
 
 ## Notes
 
+* **Changes while off**: on a Fujitsu every command switches the unit on, so with the unit off the driver keeps a change and sends it when you switch it on. Since driver 2026-11-11b the unit counts as on for a minute after an on or mode command, so a routine that switches on in Heat and sets a temperature at the same moment no longer loses the temperature.
 * The bridge reads the units every 60 seconds. Change it in the settings of any air conditioner in SmartThings (applies to all) or on the bridge setup page (30 to 600 s).
 * FGLair has no local API and no official cloud API. The bridge uses [ayla-iot-unofficial](https://pypi.org/project/ayla-iot-unofficial/), the library of the Home Assistant FGLair integration. It can stop working when Fujitsu changes the cloud.
 * Units with a wired controller (AC-UTY) are not supported by the library. Newer Airstage modules have a local API and are not covered.
